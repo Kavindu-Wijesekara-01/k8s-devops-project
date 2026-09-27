@@ -1,8 +1,4 @@
-# =============================================================================
-# DevSecOps CI/CD Pipeline — Security Scans, Build, Push, Deploy
-# =============================================================================
-
-name: CI/CD DevSecOps Pipeline
+name: DevSecOps Pipeline
 
 on:
   push:
@@ -10,29 +6,20 @@ on:
       - main
       - master
 
-env:
-  IMAGE_NAME: techkavindu2004/go-microservice
-  K8S_NAMESPACE: go-microservice
-  K8S_DEPLOYMENT: go-microservice
-
 jobs:
-  # ── Job 1: Source Code Security Scans ──────────────────────────────────────
   security-scans:
-    name: Source Code Security Scans
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Required for Gitleaks to scan all commits in the push
+          fetch-depth: 0
 
-      # 1. Secret Scanning with Gitleaks
-      - name: Secret Scanning (Gitleaks)
+      - name: Gitleaks Secret Scanning
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2. Dependency Scanning (SCA) with npm audit
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -41,54 +28,15 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
-      - name: Run npm audit
+      - name: npm audit (SCA)
         run: npm audit --audit-level=high
 
-  # ── Job 2: Build, Scan, & Push ───────────────────────────────────────────
   build-and-push:
-    name: Build, Scan & Push Docker Image
+    needs: security-scans
     runs-on: ubuntu-latest
-    needs: security-scans           # Only run if source security scans pass
-
-    outputs:
-      image_tag: ${{ steps.set-tag.outputs.tag }}
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
-      - name: Set Image Tag Variable
-        id: set-tag
-        run: |
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          echo "IMAGE_TAG=sha-${SHORT_SHA}" >> $GITHUB_ENV
-          echo "tag=sha-${SHORT_SHA}" >> $GITHUB_OUTPUT
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # Build the image locally first (load: true) so Trivy can scan it
-      - name: Build Docker Image (Local)
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          load: true
-          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-          cache-from: type=gha
-
-      # 3. Container Image Scanning with Trivy
-      - name: Run Trivy Vulnerability Scanner
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
-          format: 'table'
-          exit-code: '1'             # Fail the pipeline if vulnerabilities are found
-          ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH'
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -96,48 +44,29 @@ jobs:
           username: techkavindu2004
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # Push the image only if Trivy scan passes
-      - name: Push Docker Image
+      - name: Build Docker Image (Local)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: techkavindu2004/k8s-demo-app:${{ github.sha }}
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'techkavindu2004/k8s-demo-app:${{ github.sha }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Push to Docker Hub
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-            ${{ env.IMAGE_NAME }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # ── Job 3: Deploy to Local Kubernetes ────────────────────────────────────
-  deploy:
-    name: Deploy to Local Kubernetes
-    runs-on: self-hosted             # WSL self-hosted runner
-    needs: build-and-push            # Only runs after a successful build & push
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      # Apply the namespace + service (idempotent)
-      - name: Apply K8s Manifests (Namespace & Service)
-        run: |
-          kubectl apply -f k8s-deployment.yaml
-
-      # Update the deployment image tag
-      - name: Update Deployment Image Tag
-        run: |
-          kubectl set image deployment/${{ env.K8S_DEPLOYMENT }} \
-            go-microservice=${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag }} \
-            -n ${{ env.K8S_NAMESPACE }}
-
-      # Wait for the rolling update to complete
-      - name: Wait for Rollout to Complete
-        run: |
-          kubectl rollout status deployment/${{ env.K8S_DEPLOYMENT }} \
-            -n ${{ env.K8S_NAMESPACE }} \
-            --timeout=120s
-
-      - name: Show Pod Status
-        if: always()
-        run: |
-          kubectl get pods -n ${{ env.K8S_NAMESPACE }} -o wide
+            techkavindu2004/k8s-demo-app:${{ github.sha }}
+            techkavindu2004/k8s-demo-app:latest
