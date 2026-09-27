@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-demo-app-deployment
+spec:
+  replicas: 2 # App එකේ කොපි 2ක් Run වෙනවා
+  selector:
+    matchLabels:
+      app: k8s-demo-app
+  template:
+    metadata:
+      labels:
+        app: k8s-demo-app
+    spec:
+      containers:
+      - name: k8s-demo-app
+        image: techkavindu2004/k8s-demo-app:v1
+        ports:
+        - containerPort: 3000
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-demo-app-service
+spec:
+  type: LoadBalancer
+  selector:
+    app: k8s-demo-app
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
