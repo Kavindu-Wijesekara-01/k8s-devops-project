@@ -1,20 +1,50 @@
-# Base image එක විදිහට Node.js භාවිතා කිරීම
-FROM node:18-alpine
+# =============================================================================
+# Stage 1: Builder
+# =============================================================================
+FROM golang:1.22-alpine AS builder
 
-# Working directory එක සෑදීම
-WORKDIR /usr/src/app
+# Install dependencies for CGO-disabled build + TLS + timezone support
+RUN apk add --no-cache git ca-certificates tzdata
 
-# package.json ෆයිල් එක කොපි කිරීම
-COPY package*.json ./
+# Create a non-root user to copy into the final image
+RUN adduser -D -g '' appuser
 
-# Dependencies install කිරීම
-RUN npm install
+WORKDIR /app
 
-# Application code එක කොපි කිරීම
+# Copy dependency manifests first (maximises Docker layer cache hits)
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
+
+# Copy source code
 COPY . .
 
-# Port 3000 Expose කිරීම
-EXPOSE 3000
+# Compile: static binary, stripped debug symbols, no local paths embedded
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-s -w" \
+    -trimpath \
+    -o /go/bin/server \
+    .
 
-# Application එක Run කිරීම
-CMD [ "npm", "start" ]
+# =============================================================================
+# Stage 2: Final (scratch)
+# scratch = zero bytes; only our binary + essentials land in the image
+# =============================================================================
+FROM scratch
+
+# Timezone data
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+
+# CA certificates (required for outbound HTTPS)
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+# Non-root user definition
+COPY --from=builder /etc/passwd /etc/passwd
+
+# The compiled binary
+COPY --from=builder /go/bin/server /server
+
+USER appuser
+
+EXPOSE 8080
+
+ENTRYPOINT ["/server"]

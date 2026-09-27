@@ -1,3 +1,12 @@
-node_modules
-npm-debug.log
 .git
+.github
+*.md
+*.sh
+*.log
+*.py
+tmp/
+vendor/
+.env
+node_modules/
+server.js
+package.json

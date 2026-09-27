@@ -1,33 +1,105 @@
+# =============================================================================
+# Kubernetes Manifests for Go Microservice
+# Namespace | Deployment | Service
+# =============================================================================
+
+# ── Namespace ──────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: go-microservice
+
+---
+# ── Deployment ─────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: k8s-demo-app-deployment
+  name: go-microservice
+  namespace: go-microservice
+  labels:
+    app: go-microservice
 spec:
-  replicas: 2 # App එකේ කොපි 2ක් Run වෙනවා
+  replicas: 2
   selector:
     matchLabels:
-      app: k8s-demo-app
+      app: go-microservice
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0        # Zero-downtime rolling updates
   template:
     metadata:
       labels:
-        app: k8s-demo-app
+        app: go-microservice
+      annotations:
+        # Prometheus auto-discovery annotations
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
     spec:
       containers:
-      - name: k8s-demo-app
-        image: techkavindu2004/k8s-demo-app:v1
+      - name: go-microservice
+        # Image tag is replaced by CI/CD pipeline on every push
+        image: techkavindu2004/go-microservice:latest
+        imagePullPolicy: Always
         ports:
-        - containerPort: 3000
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        env:
+        - name: PORT
+          value: "8080"
+        - name: APP_VERSION
+          value: "1.0.0"
+        # Liveness probe — restart the pod if the app is stuck
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 15
+          failureThreshold: 3
+          timeoutSeconds: 5
+        # Readiness probe — only route traffic when the app is ready
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+          timeoutSeconds: 5
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+        # Security hardening
+        securityContext:
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
 
 ---
+# ── Service ────────────────────────────────────────────────────────────────
 apiVersion: v1
 kind: Service
 metadata:
-  name: k8s-demo-app-service
+  name: go-microservice-service
+  namespace: go-microservice
+  labels:
+    app: go-microservice
 spec:
   type: LoadBalancer
   selector:
-    app: k8s-demo-app
+    app: go-microservice
   ports:
-    - protocol: TCP
-      port: 80
-      targetPort: 3000
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: http
